@@ -3,11 +3,11 @@
  *
  * The parent process plays the part of the kernel. Forked children play the
  * part of user processes. An interval timer preempts whoever is running, and
- * the switch itself is carried out with SIGSTOP and SIGCONT, so the real
- * operating system performs every context switch.
+ * the switch is carried out with SIGSTOP and SIGCONT, so the real operating
+ * system performs every context switch.
  *
- * Read top to bottom: what a user process does, then the ready queue, then
- * the scheduler, then the timer plumbing, then main.
+ * All three processes start at the same time, so a process's turnaround time
+ * is simply the quantum it finished on.
  */
 
 #include <errno.h>
@@ -15,14 +15,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/resource.h>
 #include <sys/time.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
-#define MAX_PROCS 8
-#define MAX_TICKS 4096
+#define NPROCS     3
+#define MAX_TICKS  400
+#define CHART_WRAP 80
 
 #define CPU_PRIMES 650000
 
@@ -34,11 +34,6 @@
 #define UI_BURST   1500000L
 #define UI_WAIT_MS 130
 
-#define CHART_WRAP 80
-#define CHART_MAX  240
-#define ROW_LABEL  "  P%d %-3s "
-#define RULER_PAD  "         "
-
 typedef enum { P_READY, P_RUNNING, P_DONE } proc_state;
 
 typedef enum { W_CPU, W_IO, W_INTERACTIVE } workload;
@@ -49,33 +44,23 @@ typedef struct {
     proc_state state;
     workload   kind;
 
-    int arrival;
     int first_run;
     int finish;
     int quanta;
-    int preempted;
 } pcb;
 
 typedef struct {
-    pcb procs[MAX_PROCS];
-    int nprocs;
+    pcb procs[NPROCS];
 
-    int ready[MAX_PROCS + 1];
+    int ready[NPROCS + 1];
     int head, tail, count;
 
     int running;
     int tick;
     int switches;
-
     int quantum_ms;
-    int max_ticks;
-    int quiet;
 
-    double wall_ms;
-    double child_cpu_ms;
-    double sched_cpu_ms;
-
-    char chart[MAX_PROCS][MAX_TICKS];
+    char chart[NPROCS][MAX_TICKS];
 } sim;
 
 static volatile sig_atomic_t tick_pending;
@@ -100,7 +85,7 @@ static const char *worker_name(workload kind)
 
 /*
  * Everything from here to worker_run executes in a child, after fork. It is a
- * different process from the scheduler and shares nothing with it.
+ * different process from the scheduler and shares no memory with it.
  */
 
 static int is_prime(long n)
@@ -184,7 +169,7 @@ static void worker_run(workload kind, int id)
 static void queue_push(sim *s, int idx)
 {
     s->ready[s->tail] = idx;
-    s->tail = (s->tail + 1) % (MAX_PROCS + 1);
+    s->tail = (s->tail + 1) % (NPROCS + 1);
     s->count++;
 }
 
@@ -195,23 +180,15 @@ static int queue_pop(sim *s)
     if (s->count == 0)
         return -1;
     idx = s->ready[s->head];
-    s->head = (s->head + 1) % (MAX_PROCS + 1);
+    s->head = (s->head + 1) % (NPROCS + 1);
     s->count--;
     return idx;
 }
 
 /*
- * The scheduler. Round robin: the policy is simply that the queue is FIFO, so
- * queue_pop is the whole of the decision and sched_dispatch is the mechanism.
+ * The scheduler. Round robin means the queue is plain FIFO, so queue_pop above
+ * is the whole of the policy and sched_dispatch below is the mechanism.
  */
-
-static int index_of_pid(const sim *s, pid_t pid)
-{
-    for (int i = 0; i < s->nprocs; i++)
-        if (s->procs[i].pid == pid)
-            return i;
-    return -1;
-}
 
 static void mark_done(sim *s, int idx)
 {
@@ -224,10 +201,7 @@ static void mark_done(sim *s, int idx)
 
 static void sched_record(sim *s)
 {
-    if (s->tick >= MAX_TICKS)
-        return;
-
-    for (int i = 0; i < s->nprocs; i++) {
+    for (int i = 0; i < NPROCS; i++) {
         char c;
 
         if (s->procs[i].state == P_DONE)
@@ -244,14 +218,14 @@ static void sched_reap(sim *s)
 {
     for (;;) {
         pid_t pid;
-        int status, idx;
+        int status;
 
         pid = waitpid(-1, &status, WNOHANG);
         if (pid <= 0)
             break;
-        idx = index_of_pid(s, pid);
-        if (idx >= 0)
-            mark_done(s, idx);
+        for (int i = 0; i < NPROCS; i++)
+            if (s->procs[i].pid == pid)
+                mark_done(s, i);
     }
 }
 
@@ -286,7 +260,6 @@ static void sched_preempt(sim *s)
         return;
     }
 
-    p->preempted++;
     p->state   = P_READY;
     s->running = -1;
     queue_push(s, idx);
@@ -311,7 +284,7 @@ static void sched_dispatch(sim *s)
 
 static int sched_alive(const sim *s)
 {
-    for (int i = 0; i < s->nprocs; i++)
+    for (int i = 0; i < NPROCS; i++)
         if (s->procs[i].state != P_DONE)
             return 1;
     return 0;
@@ -319,7 +292,7 @@ static int sched_alive(const sim *s)
 
 static void sched_killall(sim *s)
 {
-    for (int i = 0; i < s->nprocs; i++) {
+    for (int i = 0; i < NPROCS; i++) {
         if (s->procs[i].pid <= 0)
             continue;
         kill(s->procs[i].pid, SIGKILL);
@@ -332,9 +305,6 @@ static void sched_killall(sim *s)
 
 static void report_tick(const sim *s)
 {
-    if (s->quiet)
-        return;
-
     printf("[tick %3d] cpu=", s->tick);
     if (s->running >= 0)
         printf("P%d", s->procs[s->running].id);
@@ -349,7 +319,7 @@ static void report_tick(const sim *s)
 
         for (int k = 0; k < s->count; k++) {
             printf("P%d ", s->procs[s->ready[i]].id);
-            i = (i + 1) % (MAX_PROCS + 1);
+            i = (i + 1) % (NPROCS + 1);
         }
     }
     printf("\n");
@@ -357,37 +327,31 @@ static void report_tick(const sim *s)
 
 static void print_timeline(const sim *s)
 {
-    int shown = s->tick > CHART_MAX ? CHART_MAX : s->tick;
-
     printf("\n=== execution timeline ===\n");
     printf("legend:  #  holding the CPU    .  ready and waiting    blank  finished\n\n");
 
-    for (int start = 0; start < shown; start += CHART_WRAP) {
+    for (int start = 0; start < s->tick; start += CHART_WRAP) {
         int end = start + CHART_WRAP;
 
-        if (end > shown)
-            end = shown;
+        if (end > s->tick)
+            end = s->tick;
 
-        printf(RULER_PAD);
+        printf("         ");
         for (int t = start; t < end; t++)
             printf("%d", (t / 10) % 10);
-        printf("\n" RULER_PAD);
+        printf("\n         ");
         for (int t = start; t < end; t++)
             printf("%d", t % 10);
         printf("\n");
 
-        for (int i = 0; i < s->nprocs; i++) {
-            printf(ROW_LABEL, s->procs[i].id, worker_name(s->procs[i].kind));
+        for (int i = 0; i < NPROCS; i++) {
+            printf("  P%d %-3s ", s->procs[i].id, worker_name(s->procs[i].kind));
             for (int t = start; t < end; t++)
                 putchar(s->chart[i][t]);
             printf("\n");
         }
         printf("\n");
     }
-
-    if (shown < s->tick)
-        printf("  (chart truncated after %d quanta, %d more not shown)\n\n",
-               shown, s->tick - shown);
 }
 
 static void print_stats(const sim *s)
@@ -395,51 +359,33 @@ static void print_stats(const sim *s)
     double turn_sum = 0, wait_sum = 0, resp_sum = 0;
 
     printf("=== statistics (all times in quanta) ===\n\n");
-    printf("  id  kind  arrive  first  finish   cpu  turnaround  waiting"
-           "  response  preempted\n");
+    printf("  id  kind   cpu  turnaround  waiting  response\n");
 
-    for (int i = 0; i < s->nprocs; i++) {
+    for (int i = 0; i < NPROCS; i++) {
         const pcb *p = &s->procs[i];
-        int turnaround = p->finish - p->arrival;
-        int waiting    = turnaround - p->quanta;
-        int response   = p->first_run - p->arrival;
+        int waiting = p->finish - p->quanta;
 
-        turn_sum += turnaround;
+        turn_sum += p->finish;
         wait_sum += waiting;
-        resp_sum += response;
+        resp_sum += p->first_run;
 
-        printf("  P%-2d %-4s  %6d %6d  %6d  %4d  %10d  %7d  %8d  %9d\n",
-               p->id, worker_name(p->kind), p->arrival, p->first_run,
-               p->finish, p->quanta, turnaround, waiting, response,
-               p->preempted);
+        printf("  P%-2d %-4s  %4d  %10d  %7d  %8d\n",
+               p->id, worker_name(p->kind), p->quanta, p->finish,
+               waiting, p->first_run);
     }
 
     printf("\n  averages in quanta:  turnaround %.2f   waiting %.2f"
            "   response %.2f\n",
-           turn_sum / s->nprocs, wait_sum / s->nprocs, resp_sum / s->nprocs);
+           turn_sum / NPROCS, wait_sum / NPROCS, resp_sum / NPROCS);
     printf("  averages in ms:      turnaround %.0f   waiting %.0f"
            "   response %.0f\n",
-           turn_sum / s->nprocs * s->quantum_ms,
-           wait_sum / s->nprocs * s->quantum_ms,
-           resp_sum / s->nprocs * s->quantum_ms);
-    printf("  turnaround = finish - arrive, waiting = turnaround - cpu,"
-           " response = first - arrive\n");
-
-    printf("\n=== cost of switching ===\n\n");
-    printf("  quantum               %d ms\n", s->quantum_ms);
-    printf("  context switches      %d over %d quanta\n", s->switches, s->tick);
-    printf("  wall clock elapsed    %.0f ms\n", s->wall_ms);
-    printf("  cpu time to workers   %.0f ms\n", s->child_cpu_ms);
-    printf("  cpu time to scheduler %.0f ms\n", s->sched_cpu_ms);
-    if (s->switches > 0)
-        printf("  scheduler cost each   %.3f ms per switch\n",
-               s->sched_cpu_ms / s->switches);
-    if (s->wall_ms > 0) {
-        printf("  worker share          %.1f%% of wall clock\n",
-               100.0 * s->child_cpu_ms / s->wall_ms);
-        printf("  scheduler share       %.2f%% of wall clock\n",
-               100.0 * s->sched_cpu_ms / s->wall_ms);
-    }
+           turn_sum / NPROCS * s->quantum_ms,
+           wait_sum / NPROCS * s->quantum_ms,
+           resp_sum / NPROCS * s->quantum_ms);
+    printf("\n  turnaround = quantum it finished on, waiting = turnaround - cpu,\n");
+    printf("  response = quantum it first reached the CPU\n");
+    printf("  %d context switches over %d quanta of %d ms\n",
+           s->switches, s->tick, s->quantum_ms);
 }
 
 /* Signals, the timer, and process creation. */
@@ -488,50 +434,16 @@ static void set_timer(int quantum_ms)
         die("setitimer");
 }
 
-static void stop_timer(void)
+static void spawn(sim *s, int idx, int id, workload kind)
 {
-    struct itimerval off;
-
-    memset(&off, 0, sizeof off);
-    setitimer(ITIMER_REAL, &off, NULL);
-}
-
-static double now_ms(void)
-{
-    struct timespec ts;
-
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return ts.tv_sec * 1000.0 + ts.tv_nsec / 1000000.0;
-}
-
-/* Children are reaped by the time this runs, so the kernel has already
-   folded their CPU usage into RUSAGE_CHILDREN. */
-static double cpu_ms(int who)
-{
-    struct rusage ru;
-
-    if (getrusage(who, &ru) < 0)
-        return 0.0;
-    return (ru.ru_utime.tv_sec + ru.ru_stime.tv_sec) * 1000.0
-         + (ru.ru_utime.tv_usec + ru.ru_stime.tv_usec) / 1000.0;
-}
-
-static void spawn(sim *s, int id, workload kind)
-{
-    pcb *p;
+    pcb *p = &s->procs[idx];
     pid_t pid;
-    int idx, status;
-
-    idx = s->nprocs++;
-    p   = &s->procs[idx];
+    int status;
 
     p->id        = id;
     p->kind      = kind;
-    p->arrival   = 0;
     p->first_run = -1;
     p->finish    = -1;
-    p->quanta    = 0;
-    p->preempted = 0;
 
     fflush(stdout);
     pid = fork();
@@ -558,21 +470,9 @@ static void spawn(sim *s, int id, workload kind)
     queue_push(s, idx);
 }
 
-static void usage(const char *prog)
-{
-    fprintf(stderr,
-            "usage: %s [-q QUANTUM_MS] [-t MAX_TICKS] [-s]\n"
-            "  -q  length of one time slice in milliseconds (default 200)\n"
-            "  -t  stop after this many time slices (default 120)\n"
-            "  -s  silent: no per-quantum log, for clean overhead timing\n",
-            prog);
-    exit(2);
-}
-
 int main(int argc, char **argv)
 {
     sigset_t alarm_only, resume_mask;
-    double started;
     sim s;
 
     /* Unbuffered: the whole point of the demo is seeing parent and child
@@ -581,36 +481,26 @@ int main(int argc, char **argv)
 
     memset(&s, 0, sizeof s);
     s.quantum_ms = 200;
-    s.max_ticks  = 120;
     s.running    = -1;
     memset(s.chart, ' ', sizeof s.chart);
 
-    for (int i = 1; i < argc; i++) {
-        if (!strcmp(argv[i], "-q") && i + 1 < argc)
-            s.quantum_ms = atoi(argv[++i]);
-        else if (!strcmp(argv[i], "-t") && i + 1 < argc)
-            s.max_ticks = atoi(argv[++i]);
-        else if (!strcmp(argv[i], "-s"))
-            s.quiet = 1;
-        else
-            usage(argv[0]);
+    if (argc == 3 && !strcmp(argv[1], "-q")) {
+        s.quantum_ms = atoi(argv[2]);
+    } else if (argc != 1) {
+        fprintf(stderr, "usage: %s [-q QUANTUM_MS]   (default 200)\n", argv[0]);
+        return 2;
     }
 
     if (s.quantum_ms < 1 || s.quantum_ms > 5000) {
         fprintf(stderr, "quantum must be between 1 and 5000 ms\n");
         return 2;
     }
-    if (s.max_ticks < 1 || s.max_ticks > MAX_TICKS) {
-        fprintf(stderr, "max ticks must be between 1 and %d\n", MAX_TICKS);
-        return 2;
-    }
 
-    printf("round robin time sharing, quantum %d ms, up to %d quanta\n\n",
-           s.quantum_ms, s.max_ticks);
+    printf("round robin time sharing, quantum %d ms\n\n", s.quantum_ms);
 
-    spawn(&s, 1, W_CPU);
-    spawn(&s, 2, W_IO);
-    spawn(&s, 3, W_INTERACTIVE);
+    spawn(&s, 0, 1, W_CPU);
+    spawn(&s, 1, 2, W_IO);
+    spawn(&s, 2, 3, W_INTERACTIVE);
 
     install_handlers();
 
@@ -619,12 +509,11 @@ int main(int argc, char **argv)
     if (sigprocmask(SIG_BLOCK, &alarm_only, &resume_mask) < 0)
         die("sigprocmask");
 
-    started = now_ms();
     set_timer(s.quantum_ms);
     sched_dispatch(&s);
     report_tick(&s);
 
-    while (!quit_requested && s.tick < s.max_ticks && sched_alive(&s)) {
+    while (!quit_requested && s.tick < MAX_TICKS - 1 && sched_alive(&s)) {
         /* sigsuspend unblocks SIGALRM and waits atomically. Testing the flag
            and then calling pause() would lose a tick that arrives between
            the two. */
@@ -647,14 +536,11 @@ int main(int argc, char **argv)
         report_tick(&s);
     }
 
-    stop_timer();
+    set_timer(0);
     sched_killall(&s);
-    s.wall_ms      = now_ms() - started;
-    s.child_cpu_ms = cpu_ms(RUSAGE_CHILDREN);
-    s.sched_cpu_ms = cpu_ms(RUSAGE_SELF);
     sigprocmask(SIG_SETMASK, &resume_mask, NULL);
 
-    for (int i = 0; i < s.nprocs; i++)
+    for (int i = 0; i < NPROCS; i++)
         if (s.procs[i].finish < 0)
             s.procs[i].finish = s.tick;
 
