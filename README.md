@@ -1,4 +1,4 @@
-# tsim — a time-sharing system simulator in C
+# tsim a time-sharing system simulator in C
 
 A preemptive round-robin scheduler built on real UNIX processes. The parent
 process plays the part of the kernel; three forked children play the part of
