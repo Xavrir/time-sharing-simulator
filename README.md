@@ -26,7 +26,7 @@ scheduling them identically becomes visible.
 
 | Process | Behaviour |
 |---|---|
-| P1 `cpu` | pure computation, finds primes by trial division, never sleeps |
+| P1 `cpu` | pure computation, never sleeps |
 | P2 `io` | short burst of work, then waits on a simulated disk read |
 | P3 `ui` | very short burst, then a long idle, imitating a user typing |
 
@@ -62,10 +62,14 @@ Everything is in `main.c`, in reading order: what a user process does, then the
 ready queue, then the scheduler, then the signal and timer plumbing, then
 `main`. Every function is `static` except `main`.
 
-The one boundary worth keeping in mind is that `run_cpu`, `run_io`,
-`run_interactive` and the helpers they call execute in a **child** process,
-after `fork`. Everything else runs in the parent. They share no memory; the only
-thing passing between them is signals.
+The three workers differ only in numbers, so they share one function driven by
+the `JOBS` table at the top: how much computation per round, how long to wait on
+a simulated device afterwards, and how many rounds. Change a row there to change
+a process's character.
+
+The one boundary worth keeping in mind is that `burn`, `nap` and `worker_run`
+execute in a **child** process, after `fork`. Everything else runs in the
+parent. They share no memory; the only thing passing between them is signals.
 
 Under round robin the policy is just that the queue is FIFO, so `queue_pop` is
 the entire scheduling decision and `sched_dispatch` is the mechanism that acts
@@ -79,11 +83,10 @@ is queued behind it, interleaved with the workers' own output.
 At the end a timeline is drawn, one row per process:
 
 ```
-         000000000011111111112222222222333333333344
-         012345678901234567890123456789012345678901
-  P1 cpu #..#..#..#..#..#..#..#..#..#.#.#.#.#.#####
-  P2 io  .#..#..#..#..#..#..#..#..#
-  P3 ui  ..#..#..#..#..#..#..#..#..#.#.#.#.#.#
+         0         1         2         3         4
+  P1 cpu #..#..#..#..#..#..#..#..#..#..#..#.#.#.#########
+  P2 io  .#..#..#..#..#..#..#..#..#..#..#
+  P3 ui  ..#..#..#..#..#..#..#..#..#..#..#.#.#.#
 ```
 
 `#` means the process held the CPU during that quantum, `.` means it was ready
