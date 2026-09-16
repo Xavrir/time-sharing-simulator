@@ -37,16 +37,19 @@ waiting, and response mean.
 
 Open the files in this order and explain only these points.
 
-- `src/main.c`, the `spawn` function: why each child stops itself with
-  `raise(SIGSTOP)` before doing any work.
-- `src/main.c`, `on_alarm`: why the handler only sets a flag, and what would go
-  wrong if it called `printf`.
-- `src/main.c`, the main loop: why `sigsuspend` instead of checking the flag and
-  calling `pause`, and why `SIGALRM` stays blocked for the rest of the body.
-- `src/scheduler.c`, `sched_preempt`: why `SIGSTOP` is the right signal, and why
-  the code waits with `WUNTRACED` instead of assuming the signal landed.
-- `src/scheduler.c`, `sched_dispatch`: the three lines that are the actual
-  context switch.
+Everything is in `main.c`, so this is one file and a few jumps.
+
+- `spawn`: why each child stops itself with `raise(SIGSTOP)` before doing any
+  work, and that everything below it in `worker_run` runs in a different
+  process.
+- `on_alarm`: why the handler only sets a flag, and what would go wrong if it
+  called `printf`.
+- The main loop: why `sigsuspend` instead of checking the flag and calling
+  `pause`, and why `SIGALRM` stays blocked for the rest of the body.
+- `sched_preempt`: why `SIGSTOP` is the right signal, and why the code waits
+  with `WUNTRACED` instead of assuming the signal landed.
+- `sched_dispatch`: the few lines that are the actual context switch, and that
+  `queue_pop` above them is the entire scheduling policy under round robin.
 
 ## 5. Changing the quantum (about 2 minutes)
 
@@ -65,10 +68,13 @@ measurement.
 ./tsim -q 2 -t 4000 -s | tail -12
 ```
 
-Point at `scheduler share of wall clock` rising from roughly a twentieth of a
-percent to nearly two percent. Say plainly that overhead does not take over the
-machine at these values, and that what the numbers demonstrate is the direction
-of the tradeoff.
+Point at `scheduler share of wall clock` rising roughly seventeenfold across the
+range. Say plainly that overhead does not take over the machine at these values,
+and that what the numbers demonstrate is the direction of the tradeoff.
+
+Close other heavy programs before recording. The CPU-bound worker needs a fixed
+amount of computation, so on a loaded machine it gets less real CPU per quantum
+and the figures shift.
 
 ## 6. Cleanup and correctness (about 30 seconds)
 

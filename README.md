@@ -75,17 +75,20 @@ what separates preemptive multitasking from cooperative multitasking.
 
 ### Structure
 
-| File | Responsibility |
-|---|---|
-| `src/main.c` | argument parsing, signal and timer setup, the main loop |
-| `src/scheduler.c` | ready queue, policy, and the stop/resume mechanism |
-| `src/worker.c` | the three workloads the children run |
-| `src/report.c` | the live per-quantum log, the timeline, the statistics |
-| `src/tsim.h` | the process control block and shared declarations |
+Everything lives in `main.c`, in reading order: what a user process does, then
+the ready queue, then the scheduler, then the signal and timer plumbing, then
+`main`. Every function is `static` except `main`.
 
-Choosing the next process is kept separate from performing the switch. A
-different policy, such as a multi-level feedback queue, would replace only the
-choice and leave the mechanism untouched.
+The one boundary worth knowing while reading is that `run_cpu`, `run_io`,
+`run_interactive` and the helpers they call execute in a **child** process,
+after `fork`. Everything else runs in the parent. They share no memory; the
+only thing that passes between them is signals.
+
+Under round robin the policy is just that the queue is FIFO, so `queue_pop` is
+the entire scheduling decision and `sched_dispatch` is the mechanism that acts
+on it. Swapping in a different policy, such as a multi-level feedback queue,
+would mean changing how the next index is chosen and leaving the stop and
+resume code alone.
 
 There is no dynamic allocation anywhere. The process table and the ready queue
 are fixed-size arrays.
@@ -98,11 +101,11 @@ is queued behind it, interleaved with the workers' own output.
 At the end, a timeline is drawn with one row per process:
 
 ```
-         000000000011111111112222222222333
-         012345678901234567890123456789012
-  P1 cpu #..#..#..#..#..#..#..#..#
+         00000000001111111111222222222233333333334444
+         01234567890123456789012345678901234567890123
+  P1 cpu #..#..#..#..#..#..#..#..#..#.#.#.#.#.#######
   P2 io  .#..#..#..#..#..#..#..#..#
-  P3 ui  ..#..#..#..#..#..#..#..#..#######
+  P3 ui  ..#..#..#..#..#..#..#..#..#.#.#.#.#.#
 ```
 
 `#` means the process held the CPU during that quantum, `.` means it was ready
@@ -127,16 +130,21 @@ Same workload, same machine, varying only the quantum:
 
 | Quantum | Switches | Avg response | Scheduler share of wall clock |
 |---:|---:|---:|---:|
-| 200 ms | 30 | 200 ms | 0.05 % |
-| 50 ms | 92 | 50 ms | 0.13 % |
-| 10 ms | 420 | 10 ms | 0.48 % |
-| 2 ms | 2106 | 2 ms | 1.82 % |
+| 200 ms | 43 | 200 ms | 0.03 % |
+| 50 ms | 137 | 50 ms | 0.07 % |
+| 10 ms | 675 | 10 ms | 0.28 % |
+| 2 ms | 3378 | 2 ms | 0.50 % |
 
-Shortening the quantum improves responsiveness in direct proportion, and the
-price is paid in scheduling overhead, which grows by a factor of roughly thirty
-across this range. On Linux the absolute cost of a `SIGSTOP`/`SIGCONT` pair is
-small enough that overhead never dominates here; what the numbers show is the
-trend, not a collapse.
+Shortening the quantum improves responsiveness in exact proportion, and the
+price is paid in scheduling overhead, which grows by a factor of roughly
+seventeen across this range. On Linux the absolute cost of a `SIGSTOP`/`SIGCONT`
+pair is small enough that overhead never takes over the machine; what the
+numbers show is the direction of the tradeoff, not a collapse.
+
+One caveat when reproducing these. The CPU-bound worker needs a fixed amount of
+computation, so on a busy machine it is handed less real CPU per quantum and
+appears to need more of them. Run the comparison on an otherwise idle system or
+the figures will not line up.
 
 ## Known limitations
 

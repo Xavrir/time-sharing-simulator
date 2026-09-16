@@ -1,22 +1,18 @@
 CC     := gcc
-WARN   := -Wall -Wextra -Werror
 STD    := -std=c11 -D_POSIX_C_SOURCE=200809L
+WARN   := -Wall -Wextra -Werror
 CFLAGS ?= $(STD) $(WARN) -O2
 
-SRC := src/main.c src/scheduler.c src/worker.c src/report.c
-HDR := src/tsim.h
-BIN := tsim
+all: tsim
 
-all: $(BIN)
-
-$(BIN): $(SRC) $(HDR)
-	$(CC) $(CFLAGS) -o $@ $(SRC)
+tsim: main.c
+	$(CC) $(CFLAGS) -o $@ main.c
 
 debug:
 	$(MAKE) clean
 	$(MAKE) CFLAGS="$(STD) $(WARN) -O0 -g -fsanitize=address,undefined"
 
 clean:
-	rm -f $(BIN)
+	rm -f tsim
 
 .PHONY: all debug clean
