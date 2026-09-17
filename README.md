@@ -8,10 +8,6 @@ than simulated in software.
 
 Written for COMP6697001 Operating Systems (BINUS), AOL Case Study.
 
-The program's own output is in Indonesian, since that is the language it gets
-presented in. Identifiers and comments in the source stay English, which is the
-usual convention and keeps the C readable to anyone.
-
 ## Build and run
 
 Needs Linux (or another UNIX) and GCC. Nothing else.
