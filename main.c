@@ -1,14 +1,12 @@
 /*
- * tsim - a time-sharing system simulator.
+ * tsim - a time sharing simulator.
  *
- * The parent process plays the part of the kernel. Forked children play the
- * part of user processes. An interval timer preempts whoever is running, and
- * the switch is carried out with SIGSTOP and SIGCONT, so the real operating
- * system performs every context switch.
+ * The parent acts as the kernel. The forked children are the user processes.
+ * A timer cuts off whoever is running, and SIGSTOP and SIGCONT do the swap, so
+ * the real OS performs every context switch rather than us faking one.
  *
- * Processes do not all start together. Each enters the system at its own
- * arrival quantum, so times are measured from that point rather than from the
- * start of the run.
+ * The processes do not all start at once. Each one shows up at its own arrival
+ * quantum, and its times are counted from there.
  */
 
 #include <errno.h>
@@ -25,14 +23,13 @@
 #define MAX_TICKS  400
 #define CHART_WRAP 80
 
-/* Events that happen at a quantum boundary are indented to line up under the
-   "[tick NNN] " prefix, so they read as part of that quantum rather than as
-   another quantum with a repeated number. */
+/* Indent boundary events under the "[tick NNN] " prefix so they look like part
+   of that quantum, not a new one with the same number. */
 #define EVENT_PAD  "           "
 
-/* One entry per process: a round is some computation, then an optional wait on
-   a simulated device. Varying these shapes is what makes the cost of treating
-   every process identically visible in the final report. */
+/* One row per process. A round is some work, then maybe a wait on a fake
+   device. Giving them different shapes is what shows, in the final report,
+   what it costs to treat them all the same. */
 static const struct {
     const char *name;
     int  arrival;   /* quantum at which this process enters the system */
@@ -71,7 +68,7 @@ typedef struct {
 
 static volatile sig_atomic_t tick_pending;
 static volatile sig_atomic_t quit_requested;
-/* burn's result is written here so the optimiser cannot delete the loop. */
+/* burn writes its result here so the compiler cannot throw the loop away. */
 static volatile long         sink;
 
 static void die(const char *what)
@@ -80,8 +77,8 @@ static void die(const char *what)
     exit(1);
 }
 
-/* burn, nap and worker_run execute in a child, after fork. That child is a
-   separate process and shares no memory with the scheduler below. */
+/* burn, nap and worker_run run inside a child, after fork. That child is its
+   own process and shares no memory with the scheduler below. */
 
 static void burn(long iterations)
 {
@@ -96,8 +93,8 @@ static void nap(long ms)
 {
     struct timespec ts = { ms / 1000, (ms % 1000) * 1000000L };
 
-    /* SIGCONT after a preemption interrupts the sleep. nanosleep writes the
-       unslept remainder back into ts, so looping resumes rather than restarts. */
+    /* Being resumed cuts the sleep short. nanosleep puts the time left back
+       into ts, so the loop picks up where it stopped instead of starting over. */
     while (nanosleep(&ts, &ts) < 0 && errno == EINTR)
         continue;
 }
@@ -111,11 +108,11 @@ static void worker_run(int idx, int id)
         if (JOBS[idx].wait_ms)
             nap(JOBS[idx].wait_ms);
     }
-    /* No "finished" line here. The scheduler announces the exit when it reaps
-       the child, and two lines saying the same thing read as a stutter. */
+    /* No "finished" line here. The scheduler says it when it reaps the child,
+       and saying it twice in a row reads badly. */
 }
 
-/* The ready queue. Fixed size, so there is no allocation anywhere. */
+/* The ready queue. Fixed size, so nothing is ever allocated. */
 
 static void queue_push(sim *s, int idx)
 {
@@ -137,8 +134,8 @@ static int queue_pop(sim *s)
 }
 
 /*
- * The scheduler. Round robin means the queue is plain FIFO, so queue_pop above
- * is the whole of the policy and sched_dispatch below is the mechanism.
+ * The scheduler. Round robin just means the queue is FIFO, so queue_pop above
+ * is the entire policy and sched_dispatch below is how it gets carried out.
  */
 
 static void mark_done(sim *s, int idx)
@@ -148,8 +145,8 @@ static void mark_done(sim *s, int idx)
     s->live--;
     printf(EVENT_PAD "- P%d %s finishes\n", s->procs[idx].id, JOBS[idx].name);
 
-    /* Clear the pid as well. Once the child is reaped the kernel may hand that
-       number to an unrelated process, and signalling it would be a real bug. */
+    /* Clear the pid too. Once the child is reaped the kernel can give that
+       number to some other process, and signalling that would be a real bug. */
     s->procs[idx].pid = -1;
 
     if (s->running == idx)
@@ -193,15 +190,15 @@ static void sched_preempt(sim *s)
 
     p->quanta++;
 
-    /* SIGSTOP cannot be caught, blocked or ignored, which is exactly why it
-       is the right instrument for preemption: the process gets no say. */
+    /* SIGSTOP cannot be caught, blocked or ignored. That is the point. The
+       process gets no say in being stopped. */
     if (kill(p->pid, SIGSTOP) < 0) {
         mark_done(s, idx);
         return;
     }
 
-    /* Never assume the signal landed. WUNTRACED makes waitpid report the stop,
-       and distinguishes it from the child having exited instead. */
+    /* Do not assume the signal landed. WUNTRACED makes waitpid report the
+       stop, and tells it apart from the child having exited. */
     int status;
     pid_t r;
 
@@ -218,8 +215,8 @@ static void sched_preempt(sim *s)
     queue_push(s, idx);
 }
 
-/* A process does not exist to the scheduler until its arrival quantum. Before
-   then it is forked but stopped, and holds no place in the ready queue. */
+/* The scheduler does not know a process exists until its arrival quantum.
+   Before that it is forked but stopped, and not in the ready queue. */
 static void sched_admit(sim *s)
 {
     for (int i = 0; i < NPROCS; i++) {
@@ -268,8 +265,8 @@ static void report_tick(const sim *s)
     else
         printf("running P%d", s->procs[s->running].id);
 
-    /* Who is waiting matters as much as who is running: the queue rotating is
-       the thing a round-robin scheduler actually does. */
+    /* Who is waiting matters as much as who is running. The queue rotating is
+       the thing round robin actually does. */
     printf("   ready:");
     if (s->count == 0) {
         printf(" none");
@@ -323,8 +320,8 @@ static void print_stats(const sim *s)
                JOBS[i].arrival, p->quanta);
 
         /* A process that never finished has no turnaround time. Printing one
-           anyway would be a lie, and for a process interrupted before it even
-           arrived the arithmetic goes negative. */
+           anyway would be a lie, and if it was cut off before it even arrived
+           the maths goes negative. */
         if (!p->done) {
             printf("  %10s  %7s  %8s\n", "-", "-", "-");
             continue;
@@ -356,8 +353,8 @@ static void print_stats(const sim *s)
 
 /* Signals, the timer, and process creation. */
 
-/* Handlers do nothing but raise a flag. Anything else, printf above all, is not
-   async-signal-safe and would be undefined behaviour here. */
+/* Handlers only set a flag. Anything else, printf above all, is not async
+   signal safe, and calling it in here is undefined behaviour. */
 static void on_alarm(int sig)
 {
     (void)sig;
@@ -378,8 +375,8 @@ static void install_handlers(void)
     sigemptyset(&sa.sa_mask);
     sa.sa_flags = SA_RESTART;
 
-    /* sigaction rather than signal: signal's behaviour around handler reset
-       and syscall restart is implementation defined. */
+    /* sigaction, not signal. What signal does about resetting the handler and
+       restarting syscalls is left up to the implementation. */
     sa.sa_handler = on_alarm;
     if (sigaction(SIGALRM, &sa, NULL) < 0)
         die("sigaction SIGALRM");
@@ -424,8 +421,8 @@ static void spawn(sim *s, int idx)
         signal(SIGALRM, SIG_DFL);
         signal(SIGINT, SIG_DFL);
 
-        /* Stop ourselves at once so no child runs before the scheduler says
-           so. Without this the workers race ahead of the first dispatch. */
+        /* Stop right away so no child runs before the scheduler picks it.
+           Without this the workers get a head start on the first dispatch. */
         raise(SIGSTOP);
         worker_run(idx, s->procs[idx].id);
         _exit(0);
@@ -444,8 +441,8 @@ int main(int argc, char **argv)
     sigset_t alarm_only, resume_mask;
     sim s;
 
-    /* Unbuffered: the whole point of the demo is seeing parent and child
-       output interleave, and block buffering hides exactly that. */
+    /* Unbuffered. The demo is about watching parent and child output mix
+       together, and buffering hides exactly that. */
     setvbuf(stdout, NULL, _IONBF, 0);
 
     memset(&s, 0, sizeof s);
@@ -479,16 +476,16 @@ int main(int argc, char **argv)
     report_tick(&s);
 
     while (!quit_requested && s.live > 0 && s.tick < MAX_TICKS - 1) {
-        /* sigsuspend unblocks SIGALRM and waits atomically. Testing the flag
-           and then calling pause() would lose a tick arriving between the two. */
+        /* sigsuspend unblocks SIGALRM and waits in one step. Checking the flag
+           and then calling pause() would drop a tick landing between the two. */
         while (!tick_pending && !quit_requested)
             sigsuspend(&resume_mask);
         if (quit_requested)
             break;
         tick_pending = 0;
 
-        /* SIGALRM stays blocked for the rest of the loop body, so a tick
-           cannot arrive while the ready queue is half rebuilt. */
+        /* SIGALRM stays blocked for the rest of the loop, so a tick cannot
+           land while the ready queue is half rebuilt. */
         sched_record(&s);
         sched_reap(&s);
         sched_preempt(&s);
