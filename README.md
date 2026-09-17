@@ -24,14 +24,19 @@ make
 Three workers with deliberately different habits, so that the effect of
 scheduling them identically becomes visible.
 
-| Process | Behaviour |
-|---|---|
-| P1 `cpu` | pure computation, never sleeps |
-| P2 `io` | short burst of work, then waits on a simulated disk read |
-| P3 `ui` | very short burst, then a long idle, imitating a user typing |
+| Process | Arrives | Behaviour |
+|---|---|---|
+| P1 `cpu` | quantum 0 | pure computation, never sleeps |
+| P2 `io` | quantum 3 | short burst of work, then waits on a simulated disk read |
+| P3 `ui` | quantum 6 | very short burst, then a long idle, imitating a user typing |
 
-Round robin treats all three the same. The report at the end shows what that
-costs each of them.
+They do not all start together. Each enters the system at its own arrival
+quantum, which is what a real system looks like: work shows up while other work
+is already running. Before a process arrives it is forked but stopped, and holds
+no place in the ready queue.
+
+Round robin treats everything present the same. The report at the end shows what
+that costs each of them.
 
 ## How it works
 
@@ -83,33 +88,50 @@ is queued behind it, interleaved with the workers' own output.
 At the end a timeline is drawn, one row per process:
 
 ```
-         0         1         2         3         4
-  P1 cpu #..#..#..#..#..#..#..#..#..#..#..#.#.#.#########
-  P2 io  .#..#..#..#..#..#..#..#..#..#..#
-  P3 ui  ..#..#..#..#..#..#..#..#..#..#..#.#.#.#
+         0         1         2         3
+  P1 cpu ####.#.#..#..#..#..#..#..#..#.#.#.#.#
+  P2 io     .#.#..#..#..#..#..#..#..#
+  P3 ui        ..#..#..#..#..#..#..#..#.#.#.#.###
 ```
 
 `#` means the process held the CPU during that quantum, `.` means it was ready
-and waiting, blank means it had finished. No process runs to completion before
-the others start, which is the property that makes this time-sharing rather than
-batch processing.
+and waiting, and blank means it was not in the system, either not yet arrived or
+already finished. No process runs to completion before the others get a turn,
+which is the property that makes this time-sharing rather than batch processing.
 
-Notice the spacing change. While all three compete a process gets every third
-quantum, so its row reads `#..#..`. Once one finishes, the survivors get every
-second quantum, `#.#.`, and the last one left runs solid. Responsiveness
-improves as load drops, without any code deciding that it should.
+The row spacing is the whole story, and it changes four times in that one chart.
+
+- **Quanta 0 to 3.** P1 is alone, so its row is solid. It is still preempted at
+  the end of every quantum; the scheduler simply has nobody else to pick and
+  hands the CPU straight back.
+- **Quanta 3 to 6.** P2 arrives, and the two of them alternate: `#.#.`
+- **Quanta 6 onward.** P3 arrives and each process gets every third quantum:
+  `#..#..`
+- **After P2 finishes.** The survivors go back to every second quantum, and the
+  last one left runs solid again.
+
+Nothing in the code decides any of that. A process's share is simply one divided
+by the number of processes in the queue, and responsiveness rises and falls with
+load on its own.
 
 ### Metrics
 
-All three processes start together, so times are counted in quanta from zero.
+Times are counted in quanta, measured from each process's own arrival.
 
-- **turnaround** is the quantum a process finished on
+- **turnaround** is finish minus arrive
 - **waiting** is turnaround minus the quanta it actually got
-- **response** is the quantum it first reached the CPU
+- **response** is the quantum it first reached the CPU, minus arrive
+
+Because both burst and arrival are visible in the table, the figures can be
+checked against a hand calculation rather than taken on trust.
 
 Response matters most for a time-sharing system, because it is the delay a user
 actually feels. Halving the quantum halves it, which is the whole argument for
 short time slices.
+
+A process that did not finish, which happens if you interrupt a run, shows a
+dash rather than a turnaround time, and is left out of the averages. It has no
+turnaround time yet, and inventing one would be a lie.
 
 ## Limitations
 
@@ -117,7 +139,9 @@ Deliberate, to keep the program small enough to explain in full.
 
 - A process that blocks on simulated IO still consumes its whole quantum. A real
   scheduler would let it yield so someone else could run.
-- All processes start at the same time. There is no staggered arrival.
+- The scheduler performs a stop and a resume at every quantum boundary, even when
+  it is about to hand the CPU back to the process it just took it from. A real
+  one would skip that.
 - Round robin is the only policy.
 - The CPU-bound worker needs a fixed amount of computation, so on a busy machine
   it is handed less real CPU per quantum and appears to need more of them.

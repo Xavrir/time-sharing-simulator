@@ -25,14 +25,20 @@ needs no libraries beyond libc.
 ```
 
 While it runs, point at the interleaving: worker output from three processes
-mixed together, and the per-quantum line showing the CPU changing hands.
+mixed together, and the per-quantum line showing the CPU changing hands. Call out
+the two `arrived` lines as they appear, since that is work entering a system that
+is already busy.
 
 When it finishes, walk through the timeline and say the key sentence out loud:
-no process runs to completion before the others start. Then point at the spacing
-changing from `#..#..` to `#.#.` to solid as processes finish, and explain that
-a process's share depends on how many others are competing.
+no process runs to completion before the others get a turn. Then trace one row
+left to right and name each change of spacing: solid while P1 is alone, `#.#.`
+once P2 arrives, `#..#..` once P3 arrives, and back again as they finish. The
+point to land is that nothing in the code decides this. A process's share is one
+divided by how many are in the queue.
 
-Read the statistics table and define turnaround, waiting, and response.
+Read the statistics table and define turnaround, waiting, and response. Note that
+arrival and CPU time are both in the table, so the numbers can be checked by hand
+rather than taken on trust.
 
 ## 4. The code (about 3 minutes)
 
@@ -40,6 +46,8 @@ One file, a few jumps.
 
 - `spawn`: why each child stops itself with `raise(SIGSTOP)` before doing any
   work, and that everything in `worker_run` runs in a different process.
+- `sched_admit`: why a process that has not reached its arrival quantum is
+  forked but holds no place in the ready queue.
 - `on_alarm`: why the handler only sets a flag, and what would go wrong if it
   called `printf`.
 - The main loop: why `sigsuspend` rather than checking the flag and calling

@@ -25,22 +25,24 @@
 #define CHART_WRAP 80
 
 /* One entry per process: a round is some computation, then an optional wait on
-   a simulated device. Varying these three shapes is what makes the cost of
-   treating every process identically visible in the final report. */
+   a simulated device. Varying these shapes is what makes the cost of treating
+   every process identically visible in the final report. */
 static const struct {
     const char *name;
+    int  arrival;   /* quantum at which this process enters the system */
     long burst;     /* loop iterations per round, about 1.4 ns each */
     long wait_ms;   /* simulated device wait, 0 means never sleeps */
     int  rounds;
 } JOBS[NPROCS] = {
-    { "cpu", 125000000L,   0, 12 },
-    { "io",    9000000L,  50, 26 },
-    { "ui",    1500000L, 130, 26 },
+    { "cpu", 0, 125000000L,   0, 12 },
+    { "io",  3,   9000000L,  50, 26 },
+    { "ui",  6,   1500000L, 130, 26 },
 };
 
 typedef struct {
     int   id;        /* the P1, P2, P3 shown in the output */
     pid_t pid;
+    int   arrived;
     int   done;
     int   first_run;
     int   finish;
@@ -151,7 +153,7 @@ static void sched_record(sim *s)
     for (int i = 0; i < NPROCS; i++) {
         char mark;
 
-        if (s->procs[i].done)
+        if (!s->procs[i].arrived || s->procs[i].done)
             mark = ' ';
         else if (i == s->running)
             mark = '#';
@@ -208,6 +210,21 @@ static void sched_preempt(sim *s)
     queue_push(s, idx);
 }
 
+/* A process does not exist to the scheduler until its arrival quantum. Before
+   then it is forked but stopped, and holds no place in the ready queue. */
+static void sched_admit(sim *s)
+{
+    for (int i = 0; i < NPROCS; i++) {
+        if (JOBS[i].arrival != s->tick)
+            continue;
+
+        s->procs[i].arrived = 1;
+        queue_push(s, i);
+        printf("[tick %3d] P%d %s arrived\n",
+               s->tick, s->procs[i].id, JOBS[i].name);
+    }
+}
+
 static void sched_dispatch(sim *s)
 {
     int idx = queue_pop(s);
@@ -246,7 +263,9 @@ static void report_tick(const sim *s)
 static void print_timeline(const sim *s)
 {
     printf("\n=== execution timeline ===\n");
-    printf("legend:  #  holding the CPU    .  ready and waiting    blank  finished\n");
+    printf("legend:  #  holding the CPU    .  ready and waiting\n");
+    printf("         blank  not in the system, either not yet arrived"
+           " or already finished\n");
     printf("         each column is one quantum, marked every ten\n\n");
 
     for (int start = 0; start < s->tick; start += CHART_WRAP) {
@@ -268,24 +287,43 @@ static void print_timeline(const sim *s)
 static void print_stats(const sim *s)
 {
     double turn = 0, wait = 0, resp = 0;
+    int finished = 0;
 
     printf("=== statistics (times in quanta) ===\n\n");
-    printf("  id  kind   cpu  turnaround  waiting  response\n");
+    printf("  id  kind  arrive   cpu  turnaround  waiting  response\n");
 
     for (int i = 0; i < NPROCS; i++) {
         const pcb *p = &s->procs[i];
 
-        turn += p->finish;
-        wait += p->finish - p->quanta;
-        resp += p->first_run;
-        printf("  P%-2d %-4s  %4d  %10d  %7d  %8d\n", p->id, JOBS[i].name,
-               p->quanta, p->finish, p->finish - p->quanta, p->first_run);
+        printf("  P%-2d %-4s  %6d  %4d", p->id, JOBS[i].name,
+               JOBS[i].arrival, p->quanta);
+
+        /* A process that never finished has no turnaround time. Printing one
+           anyway would be a lie, and for a process interrupted before it even
+           arrived the arithmetic goes negative. */
+        if (!p->done) {
+            printf("  %10s  %7s  %8s\n", "-", "-", "-");
+            continue;
+        }
+
+        int turnaround = p->finish - JOBS[i].arrival;
+        int waiting    = turnaround - p->quanta;
+        int response   = p->first_run - JOBS[i].arrival;
+
+        turn += turnaround;
+        wait += waiting;
+        resp += response;
+        finished++;
+        printf("  %10d  %7d  %8d\n", turnaround, waiting, response);
     }
 
-    printf("\n  average turnaround %.1f, waiting %.1f, response %.1f"
-           " (response = %.0f ms)\n",
-           turn / NPROCS, wait / NPROCS, resp / NPROCS,
-           resp / NPROCS * s->quantum_ms);
+    printf("\n  turnaround = finish - arrive, waiting = turnaround - cpu,"
+           " response = first cpu - arrive\n");
+    if (finished > 0)
+        printf("  averages over the %d that finished: turnaround %.1f,"
+               " waiting %.1f, response %.1f (response = %.0f ms)\n",
+               finished, turn / finished, wait / finished, resp / finished,
+               resp / finished * s->quantum_ms);
     printf("  %d context switches over %d quanta of %d ms\n",
            s->switches, s->tick, s->quantum_ms);
 }
@@ -373,7 +411,6 @@ static void spawn(sim *s, int idx)
 
     while (waitpid(pid, &status, WUNTRACED) < 0 && errno == EINTR)
         continue;
-    queue_push(s, idx);
 }
 
 int main(int argc, char **argv)
@@ -411,6 +448,7 @@ int main(int argc, char **argv)
         die("sigprocmask");
 
     set_timer(s.quantum_ms);
+    sched_admit(&s);
     sched_dispatch(&s);
     report_tick(&s);
 
@@ -431,6 +469,7 @@ int main(int argc, char **argv)
         s.tick++;
         if (s.live == 0)
             break;
+        sched_admit(&s);
         sched_dispatch(&s);
         report_tick(&s);
     }
@@ -438,10 +477,6 @@ int main(int argc, char **argv)
     set_timer(0);
     sched_killall(&s);
     sigprocmask(SIG_SETMASK, &resume_mask, NULL);
-
-    for (int i = 0; i < NPROCS; i++)
-        if (s.procs[i].finish < 0)
-            s.procs[i].finish = s.tick;
 
     if (quit_requested)
         printf("\ninterrupted, stopping early\n");
