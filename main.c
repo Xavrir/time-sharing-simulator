@@ -100,12 +100,12 @@ static void worker_run(int idx, int id)
 {
     for (int r = 1; r <= JOBS[idx].rounds; r++) {
         burn(JOBS[idx].burst);
-        printf("    [P%d %-3s] round %d of %d\n",
+        printf("    [P%d %-3s] putaran %d dari %d\n",
                id, JOBS[idx].name, r, JOBS[idx].rounds);
         if (JOBS[idx].wait_ms)
             nap(JOBS[idx].wait_ms);
     }
-    printf("    [P%d %-3s] finished\n", id, JOBS[idx].name);
+    printf("    [P%d %-3s] selesai\n", id, JOBS[idx].name);
 }
 
 /* The ready queue. Fixed size, so there is no allocation anywhere. */
@@ -220,7 +220,7 @@ static void sched_admit(sim *s)
 
         s->procs[i].arrived = 1;
         queue_push(s, i);
-        printf("[tick %3d] P%d %s arrived\n",
+        printf("[quantum %3d] P%d %s tiba -> READY\n",
                s->tick, s->procs[i].id, JOBS[i].name);
     }
 }
@@ -255,18 +255,18 @@ static void sched_killall(sim *s)
 static void report_tick(const sim *s)
 {
     if (s->running < 0)
-        printf("[tick %3d] cpu=--\n", s->tick);
+        printf("[quantum %3d] CPU menganggur\n", s->tick);
     else
-        printf("[tick %3d] cpu=P%d\n", s->tick, s->procs[s->running].id);
+        printf("[quantum %3d] CPU dipegang P%d\n",
+               s->tick, s->procs[s->running].id);
 }
 
 static void print_timeline(const sim *s)
 {
-    printf("\n=== execution timeline ===\n");
-    printf("legend:  #  holding the CPU    .  ready and waiting\n");
-    printf("         blank  not in the system, either not yet arrived"
-           " or already finished\n");
-    printf("         each column is one quantum, marked every ten\n\n");
+    printf("\n=== LINI MASA EKSEKUSI ===\n");
+    printf("keterangan:  #  memegang CPU    .  READY, menunggu giliran\n");
+    printf("             kosong  belum tiba, atau sudah selesai\n");
+    printf("             satu kolom = satu quantum, ditandai tiap sepuluh\n\n");
 
     for (int start = 0; start < s->tick; start += CHART_WRAP) {
         int end = start + CHART_WRAP < s->tick ? start + CHART_WRAP : s->tick;
@@ -289,20 +289,20 @@ static void print_stats(const sim *s)
     double turn = 0, wait = 0, resp = 0;
     int finished = 0;
 
-    printf("=== statistics (times in quanta) ===\n\n");
-    printf("  id  kind  arrive   cpu  turnaround  waiting  response\n");
+    printf("=== STATISTIK (satuan: quantum) ===\n\n");
+    printf("  id  jenis  tiba   cpu  turnaround  menunggu  respons\n");
 
     for (int i = 0; i < NPROCS; i++) {
         const pcb *p = &s->procs[i];
 
-        printf("  P%-2d %-4s  %6d  %4d", p->id, JOBS[i].name,
+        printf("  P%-2d %-5s  %4d  %4d", p->id, JOBS[i].name,
                JOBS[i].arrival, p->quanta);
 
         /* A process that never finished has no turnaround time. Printing one
            anyway would be a lie, and for a process interrupted before it even
            arrived the arithmetic goes negative. */
         if (!p->done) {
-            printf("  %10s  %7s  %8s\n", "-", "-", "-");
+            printf("  %10s  %8s  %7s\n", "-", "-", "-");
             continue;
         }
 
@@ -314,17 +314,17 @@ static void print_stats(const sim *s)
         wait += waiting;
         resp += response;
         finished++;
-        printf("  %10d  %7d  %8d\n", turnaround, waiting, response);
+        printf("  %10d  %8d  %7d\n", turnaround, waiting, response);
     }
 
-    printf("\n  turnaround = finish - arrive, waiting = turnaround - cpu,"
-           " response = first cpu - arrive\n");
+    printf("\n  turnaround = selesai - tiba, menunggu = turnaround - cpu,"
+           " respons = cpu pertama - tiba\n");
     if (finished > 0)
-        printf("  averages over the %d that finished: turnaround %.1f,"
-               " waiting %.1f, response %.1f (response = %.0f ms)\n",
+        printf("  rata-rata dari %d proses yang selesai: turnaround %.1f,"
+               " menunggu %.1f, respons %.1f (respons = %.0f ms)\n",
                finished, turn / finished, wait / finished, resp / finished,
                resp / finished * s->quantum_ms);
-    printf("  %d context switches over %d quanta of %d ms\n",
+    printf("  %d context switch dalam %d quantum @ %d ms\n",
            s->switches, s->tick, s->quantum_ms);
 }
 
@@ -365,7 +365,8 @@ static void install_handlers(void)
 
 static void usage(const char *prog)
 {
-    fprintf(stderr, "usage: %s [-q QUANTUM_MS]   1 to 5000, default 200\n", prog);
+    fprintf(stderr, "cara pakai: %s [-q QUANTUM_MS]   1 sampai 5000,"
+                    " default 200\n", prog);
     exit(2);
 }
 
@@ -436,7 +437,8 @@ int main(int argc, char **argv)
     if (s.quantum_ms < 1 || s.quantum_ms > 5000)
         usage(argv[0]);
 
-    printf("round robin time sharing, quantum %d ms\n\n", s.quantum_ms);
+    printf("=== SIMULASI SISTEM TIME SHARING (ROUND ROBIN) ===\n");
+    printf("Quantum: %d ms, jumlah proses: %d\n\n", s.quantum_ms, NPROCS);
 
     for (int i = 0; i < NPROCS; i++)
         spawn(&s, i);
@@ -479,7 +481,7 @@ int main(int argc, char **argv)
     sigprocmask(SIG_SETMASK, &resume_mask, NULL);
 
     if (quit_requested)
-        printf("\ninterrupted, stopping early\n");
+        printf("\ndihentikan, berhenti lebih awal\n");
 
     print_timeline(&s);
     print_stats(&s);

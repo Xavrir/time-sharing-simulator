@@ -26,8 +26,8 @@ needs no libraries beyond libc.
 
 While it runs, point at the interleaving: worker output from three processes
 mixed together, and the per-quantum line showing the CPU changing hands. Call out
-the two `arrived` lines as they appear, since that is work entering a system that
-is already busy.
+the two `tiba -> READY` lines as they appear, since that is work entering a
+system that is already busy.
 
 When it finishes, walk through the timeline and say the key sentence out loud:
 no process runs to completion before the others get a turn. Then trace one row
