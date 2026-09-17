@@ -6,8 +6,9 @@
  * the switch is carried out with SIGSTOP and SIGCONT, so the real operating
  * system performs every context switch.
  *
- * All three processes start together, so a process's turnaround time is simply
- * the quantum it finished on.
+ * Processes do not all start together. Each enters the system at its own
+ * arrival quantum, so times are measured from that point rather than from the
+ * start of the run.
  */
 
 #include <errno.h>
