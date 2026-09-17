@@ -82,8 +82,22 @@ on it. There is no dynamic allocation anywhere.
 
 ## Reading the output
 
-While running, one line per quantum shows which process holds the CPU and what
-is queued behind it, interleaved with the workers' own output.
+While running, one line per quantum shows which process holds the CPU and who is
+queued behind it, interleaved with the workers' own output.
+
+```
+           + P2 io arrives
+[tick   3] running P1   ready: P2
+[tick   4] running P2   ready: P1
+```
+
+Lines beginning `+` and `-` are a process entering or leaving the system. They
+are indented to sit under the tick prefix, so they read as something that
+happened during that quantum rather than as a quantum of their own.
+
+Watch the `ready:` list rather than the running process. Seeing the same
+identifiers rotate through it is the clearest evidence that this is round robin
+and not something picking favourites.
 
 At the end a timeline is drawn, one row per process:
 

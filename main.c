@@ -25,6 +25,11 @@
 #define MAX_TICKS  400
 #define CHART_WRAP 80
 
+/* Events that happen at a quantum boundary are indented to line up under the
+   "[tick NNN] " prefix, so they read as part of that quantum rather than as
+   another quantum with a repeated number. */
+#define EVENT_PAD  "           "
+
 /* One entry per process: a round is some computation, then an optional wait on
    a simulated device. Varying these shapes is what makes the cost of treating
    every process identically visible in the final report. */
@@ -106,7 +111,8 @@ static void worker_run(int idx, int id)
         if (JOBS[idx].wait_ms)
             nap(JOBS[idx].wait_ms);
     }
-    printf("    [P%d %-3s] finished\n", id, JOBS[idx].name);
+    /* No "finished" line here. The scheduler announces the exit when it reaps
+       the child, and two lines saying the same thing read as a stutter. */
 }
 
 /* The ready queue. Fixed size, so there is no allocation anywhere. */
@@ -140,6 +146,7 @@ static void mark_done(sim *s, int idx)
     s->procs[idx].done   = 1;
     s->procs[idx].finish = s->tick + 1;
     s->live--;
+    printf(EVENT_PAD "- P%d %s finishes\n", s->procs[idx].id, JOBS[idx].name);
 
     /* Clear the pid as well. Once the child is reaped the kernel may hand that
        number to an unrelated process, and signalling it would be a real bug. */
@@ -221,8 +228,7 @@ static void sched_admit(sim *s)
 
         s->procs[i].arrived = 1;
         queue_push(s, i);
-        printf("[tick %3d] P%d %s arrived\n",
-               s->tick, s->procs[i].id, JOBS[i].name);
+        printf(EVENT_PAD "+ P%d %s arrives\n", s->procs[i].id, JOBS[i].name);
     }
 }
 
@@ -255,10 +261,27 @@ static void sched_killall(sim *s)
 
 static void report_tick(const sim *s)
 {
+    printf("[tick %3d] ", s->tick);
+
     if (s->running < 0)
-        printf("[tick %3d] cpu=--\n", s->tick);
+        printf("idle      ");
     else
-        printf("[tick %3d] cpu=P%d\n", s->tick, s->procs[s->running].id);
+        printf("running P%d", s->procs[s->running].id);
+
+    /* Who is waiting matters as much as who is running: the queue rotating is
+       the thing a round-robin scheduler actually does. */
+    printf("   ready:");
+    if (s->count == 0) {
+        printf(" none");
+    } else {
+        int i = s->head;
+
+        for (int k = 0; k < s->count; k++) {
+            printf(" P%d", s->procs[s->ready[i]].id);
+            i = (i + 1) % (NPROCS + 1);
+        }
+    }
+    printf("\n");
 }
 
 static void print_timeline(const sim *s)
@@ -318,13 +341,15 @@ static void print_stats(const sim *s)
         printf("  %10d  %7d  %8d\n", turnaround, waiting, response);
     }
 
-    printf("\n  turnaround = finish - arrive, waiting = turnaround - cpu,"
-           " response = first cpu - arrive\n");
-    if (finished > 0)
-        printf("  averages over the %d that finished: turnaround %.1f,"
-               " waiting %.1f, response %.1f (response = %.0f ms)\n",
-               finished, turn / finished, wait / finished, resp / finished,
+    printf("\n  turnaround = finish - arrive     waiting = turnaround - cpu\n");
+    printf("  response   = first cpu - arrive\n");
+
+    if (finished > 0) {
+        printf("\n  averages over the %d that finished:\n", finished);
+        printf("    turnaround %.1f   waiting %.1f   response %.1f (= %.0f ms)\n",
+               turn / finished, wait / finished, resp / finished,
                resp / finished * s->quantum_ms);
+    }
     printf("  %d context switches over %d quanta of %d ms\n",
            s->switches, s->tick, s->quantum_ms);
 }
